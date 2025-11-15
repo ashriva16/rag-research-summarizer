@@ -8,16 +8,23 @@ import requests
 from pypdf import PdfReader
 from semanticscholar import SemanticScholar
 from sentence_transformers import SentenceTransformer
-from sambanova import SambaNova
+from transformers import AutoTokenizer
+from huggingface_hub import InferenceClient
 
-logging.basicConfig(filename="llm.log", level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
-llm_client = SambaNova(
-    api_key="somethung",
-    base_url="https://api.sambanova.ai/v1",
-)
-embedding_model_name="all-MiniLM-L6-v2"
-Embedding_Model = SentenceTransformer(embedding_model_name)
+fh = logging.FileHandler("llm.log")
+logger.addHandler(fh)
+
+Embedding_Model = SentenceTransformer("all-MiniLM-L6-v2")
+
+model_name = "facebook/bart-large-cnn"
+Tokenizer = AutoTokenizer.from_pretrained(model_name)
+llm_client = InferenceClient(model=model_name,
+                            token=os.getenv("HF_TOKEN"),
+                            provider="hf-inference")
+
 
 # helper functions
 def clean_text(t):
@@ -42,7 +49,7 @@ def extract_pdf_text(pdf_path):
         return "\n".join(text)
 
     except Exception as exc:
-        logging.warning("Failed to extract PDF text from %s: %s", pdf_path, exc)
+        logger.warning("Failed to extract PDF text from %s: %s", pdf_path, exc)
         return ""
 
 def read_literature(meta_dataframe):
@@ -60,7 +67,7 @@ def read_literature(meta_dataframe):
 
             fname = f"{arxiv_id}.pdf"
 
-            out_path = os.path.join("./", fname)
+            out_path = os.path.join("./database/", fname)
             with open(out_path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     if chunk:
@@ -108,12 +115,12 @@ def update_meta_data(query, meta_dataframe, max_results=20):
 
     new_dataframe = pd.DataFrame(rows)
 
-    new_dataframe["text_corpus"] = ("Title: " + new_dataframe["title"] \
+    new_dataframe["metadata_text"] = ("Title: " + new_dataframe["title"] \
         + "\n\n" "Abstract: " + new_dataframe["abstract"])
-    new_dataframe.loc[:, "text_corpus"] = new_dataframe["text_corpus"].apply(clean_text)
     new_dataframe = new_dataframe.dropna()
+    new_dataframe.loc[:, "metadata_text"] = new_dataframe["metadata_text"].apply(clean_text)
 
-    if meta_df.empty:
+    if meta_dataframe.empty:
         return new_dataframe
 
     updated_meta_df = pd.concat([meta_dataframe, new_dataframe],
@@ -121,15 +128,18 @@ def update_meta_data(query, meta_dataframe, max_results=20):
 
     return updated_meta_df
 
-def compute_embedding(text, max_tokens=200):
+def compute_embedding(text, max_words=200):
     """
     Returns a normalized mean embedding for the input text using specified model.
     """
 
     words = text.split()
-    chunks = [" ".join(words[i:i+max_tokens]) for i in range(0, len(words), max_tokens)]
-    encodings = Embedding_Model.encode(chunks, normalize_embeddings=True)
-    avg_encodings = np.mean(encodings, axis=0)
+    chunks =  [" ".join(words[i:i+max_words]) for i in range(0, len(words), max_words)]
+
+    # get average embeding
+    embeds = Embedding_Model.encode(chunks, normalize_embeddings=True)
+    avg_encodings = np.mean(embeds, axis=0)
+
     return avg_encodings / np.linalg.norm(avg_encodings)
 
 def build_vector_database(dataframe):
@@ -142,6 +152,7 @@ def build_vector_database(dataframe):
     return dataframe
 
 def compute_similarity(doc_embed, query_vec):
+
     return doc_embed @ query_vec
 
 def search_top_k_relevant_paper(query_embed, meta_dataframe, top_k=5):
@@ -154,93 +165,57 @@ def search_top_k_relevant_paper(query_embed, meta_dataframe, top_k=5):
 
     return text_corpus
 
-def chunk_text_for_llm(text, max_tokens=20):
-    return [text]
+def chunk_text_for_llm(text, max_tokens=512, overlap=64):
+
+    tokens = Tokenizer.encode(text)
+
+    chunks = []
+    start = 0
+
+    while start < len(tokens):
+        end = start + max_tokens
+        chunk_tokens = tokens[start:end]
+        chunk_text = Tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+        chunks.append(chunk_text)
+
+        start += max_tokens - overlap  # advance with overlap
+
+    return chunks
 
 def get_llm_response(prompt):
 
-    resp = llm_client.chat.completions.create(
-                model="Meta-Llama-3.3-70B-Instruct",
-                messages=[
-                    {"role": "user", "content": (prompt)
-                    }],
-                temperature=0.1,
-                top_p=0.1
-                )
+    resp = llm_client.summarization(prompt)
 
     return resp
 
-def get_paper_summary(paper_text):
+def get_paper_summary(paper_txt, max_round=5, max_char=3000):
     """
     Summarizes a single paper and returns the text response from LLM
     """
 
-    chunks = chunk_text_for_llm(paper_text)
+    joint_txt = paper_txt
+    for _ in range(max_round):
+        chunks = chunk_text_for_llm(joint_txt)
+        chunk_summaries = []
+        for chunk in chunks:
+            instruction = f"""{chunk}"""
 
-    chunk_summaries = []
-    for chunk in chunks:
-        instruction = f"""
-        You are an expert academic assistant.
-        Summarize the following chunk of a reasearch paper with 5-Sentence Summary
+            chunk_resp = get_llm_response(instruction)
+            chunk_summaries.append(chunk_resp["summary_text"])
 
-        Here is the content:
+        joint_txt = "\n".join(chunk_summaries)
 
-        {chunk}
-        """
+        if len(joint_txt) <=max_char:
+            break
 
-        chunk_resp = get_llm_response(instruction)
-        chunk_summaries.append(chunk_resp.choices[0].message.content)
-
-    joined_chunk_summaries = "\n\n---\n\n".join(chunk_summaries)
-    final_prompt = f"""
-                You are an expert academic assistant.
-
-                Below are partial summaries of one research paper (different chunks of the same paper).
-
-                Combine them into a single coherent summary using the same format:
-
-                1. 5-Sentence Summary
-                2. Explain Like I’m 5
-                3. Key Ideas
-                4. 2-Sentence for method
-
-                Partial summaries:
-                {joined_chunk_summaries}
-                """
-    final_resp = get_llm_response(final_prompt)
-
-    return final_resp
-
-def get_aggregate_summary(paper_txts):
-
-    joined_texts = "\n\n---\n\n".join(paper_txts)
-
-    lit_review_prompt = f"""
-    You are an expert academic reviewer.
-
-    Below is a collection of research abstracts from five papers in the same topic area.
-
-    Your task:
-    1. Read all five abstracts together.
-    2. Identify the common themes, methods, and contributions.
-    3. Produce a single high-level **5-sentence summary** describing the overall field.
-    4. Focus on the shared concepts, not individual papers.
-
-    Here are the abstracts:
-    {joined_texts}
-
-    Now produce the 5-sentence summary.
-    """
-    response = get_llm_response(lit_review_prompt)
-
-    return response
+    return joint_txt
 
 if __name__ == "__main__":
 
     input_query = input('Ask me a question: ')
-    logging.info(f"Query:\t {input_query}")
+    logger.info("\n\nQuery:\t %s\n", input_query)
 
-    # Load exsiting meta_database
+    # # Load exsiting meta_database
 
     meta_path = "meta_database.csv"
 
@@ -251,18 +226,22 @@ if __name__ == "__main__":
 
     # If similarity is very low in existing database then search online
     query_embed = compute_embedding(input_query)
-    scores =  meta_df["encodings"].apply(lambda emb: compute_similarity(emb, query_embed))
+
+    scores = -1
+    if not meta_df.empty:
+        scores =  meta_df["encodings"].apply(lambda emb: compute_similarity(emb, query_embed))
 
     if np.min(scores) < 0.45:
         # Not enough info exist in existing database, needs to be updated
-
         meta_df = update_meta_data(input_query, meta_dataframe=meta_df)
         meta_df = build_vector_database(meta_df)
+    meta_df.to_csv("metadata.csv", mode="a", header=False, index=False, encoding="utf-8")
 
     # Load required knowledge useful for LLM models to generate responses
-    retrieved_knowledge = search_top_k_relevant_paper(input_query, meta_df)
+    retrieved_knowledge = search_top_k_relevant_paper(query_embed, meta_df, top_k=1)
 
     # Ask models to generate response from top-k papers
-    for paper_texts in range(retrieved_knowledge):
-        response = get_paper_summary(retrieved_knowledge)
-        logging.info(response.choices[0].message.content)
+    for n, paper_texts in enumerate(retrieved_knowledge):
+        response = get_paper_summary(paper_texts)
+        logger.info(f"Summary of Paper: {n}")
+        logger.info(response)

@@ -1,0 +1,46 @@
+# Bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+
+# Temporary / cache / build
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.old
+*.DS_Store
+Thumbs.db
+
+# Python tooling caches
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.cache/
+.ipynb_checkpoints/
+
+# Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environments / config
+.env
+.env.*
+*.local
+
+# Editor settings
+.vscode/
+.idea/
+
+#
+*.pdf
+*.ipynb

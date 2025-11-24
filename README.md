@@ -1,10 +1,11 @@
 # Literature Retrieval and Summarization Tool
 
-This project provides an end-to-end pipeline for: 1. Querying Semantic
-Scholar for relevant papers. 2. Downloading and extracting text from
-arXiv PDFs. 3. Cleaning and embedding metadata using
-SentenceTransformers. 4. Performing vector search to retrieve the most
-relevant papers. 5. Running recursive LLM-based summarization using
+This project provides an end-to-end pipeline for: 
+1. Querying Semantic Scholar for relevant papers.
+2. Downloading and extracting text from arXiv PDFs.
+3. Cleaning and embedding metadata using SentenceTransformers.
+4. Performing a vector search to retrieve the most relevant papers.
+5. Running recursive LLM-based summarization using
 Hugging Face Inference API.
 
 ## Key Features

@@ -56,3 +56,7 @@ Hugging Face Inference API.
     tokenizer.
 -   Supports generalization to any HF model compatible with
     `.summarization()`.
+
+## References
+
+- https://github.com/pvhuwung/AIRST-research-paper-summarization/tree/main
